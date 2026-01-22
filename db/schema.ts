@@ -9,6 +9,7 @@ export const todos = sqliteTable("todos", {
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(new Date()),
+  dueDate: integer("due_date", { mode: "timestamp" }),
 });
 
 export type Todo = typeof todos.$inferSelect;

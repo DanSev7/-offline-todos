@@ -1,4 +1,5 @@
 import { desc, eq } from "drizzle-orm";
+import * as Notifications from "expo-notifications";
 import { create } from "zustand";
 import { db, initializeDb } from "../db/client";
 import { todos } from "../db/schema";
@@ -7,7 +8,7 @@ interface TodoState {
   todos: (typeof todos.$inferSelect)[];
   init: () => Promise<void>;
   loadTodos: () => Promise<void>;
-  addTodo: (text: string) => Promise<void>;
+  addTodo: (text: string, dueDate?: Date) => Promise<void>;
   toggleTodo: (id: number) => Promise<void>;
   updateTodo: (id: number, text: string) => Promise<void>;
   deleteTodo: (id: number) => Promise<void>;
@@ -32,13 +33,34 @@ export const useTodoStore = create<TodoState>((set, get) => ({
       console.error("Failed to load todos", e);
     }
   },
-  addTodo: async (text: string) => {
+  addTodo: async (text: string, dueDate?: Date) => {
     try {
       await db.insert(todos).values({
         text,
         createdAt: new Date(),
         isCompleted: false,
+        dueDate: dueDate ?? null,
       });
+
+      // Schedule Notification if due date is in the future
+      if (dueDate && dueDate > new Date()) {
+        const seconds = Math.floor((dueDate.getTime() - Date.now()) / 1000);
+        if (seconds > 0) {
+          await Notifications.scheduleNotificationAsync({
+            content: {
+              title: "Task Reminder ⏰",
+              body: text,
+              sound: true,
+            },
+            trigger: {
+              type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+              seconds: seconds,
+              repeats: false,
+            },
+          });
+        }
+      }
+
       await get().loadTodos();
     } catch (e) {
       console.error(e);
@@ -58,23 +80,7 @@ export const useTodoStore = create<TodoState>((set, get) => ({
 
       await get().loadTodos();
 
-      // Check for completion
-      if (newStatus) {
-        const currentTodos = get().todos;
-        const activeCount = currentTodos.filter((t) => !t.isCompleted).length;
-
-        if (activeCount === 0 && currentTodos.length > 0) {
-          import("expo-notifications").then(({ scheduleNotificationAsync }) => {
-            scheduleNotificationAsync({
-              content: {
-                title: "All Tasks Completed! 🎉",
-                body: "Great job! You've finished everything for now.",
-              },
-              trigger: null, // immediate
-            });
-          });
-        }
-      }
+      // Removed 100% completion logic as per request
     } catch (e) {
       console.error(e);
     }

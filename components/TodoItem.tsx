@@ -87,16 +87,23 @@ export const TodoItem = ({
             returnKeyType="done"
           />
         ) : (
-          <Text
-            className={clsx(
-              "text-base font-medium flex-1",
-              todo.isCompleted
-                ? "text-zinc-400 line-through dark:text-zinc-500"
-                : "text-zinc-900 dark:text-white",
+          <View className="flex-1">
+            <Text
+              className={clsx(
+                "text-base font-medium",
+                todo.isCompleted
+                  ? "text-zinc-400 line-through dark:text-zinc-500"
+                  : "text-zinc-900 dark:text-white",
+              )}
+            >
+              {todo.text}
+            </Text>
+            {todo.dueDate && (
+              <Text className="text-xs text-zinc-400 mt-1">
+                Due: {new Date(todo.dueDate).toLocaleString()}
+              </Text>
             )}
-          >
-            {todo.text}
-          </Text>
+          </View>
         )}
       </TouchableOpacity>
 

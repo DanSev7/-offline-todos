@@ -1,12 +1,14 @@
 import { useTodoStore } from "@/store/useTodoStore";
 import * as FileSystem from "expo-file-system";
-import { Database, Info, Trash2 } from "lucide-react-native";
+import * as Notifications from "expo-notifications";
+import { Bell, Database, Info, Trash2 } from "lucide-react-native";
 import React from "react";
 import { Alert, Platform, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+
 export default function SettingsScreen() {
-  const { deleteCompleted, todos } = useTodoStore();
+  const { deleteCompleted } = useTodoStore();
 
   // Basic info about storage location (simplified for display)
   const dbPath =
@@ -47,6 +49,26 @@ export default function SettingsScreen() {
             </View>
           </View>
         </View>
+
+        <TouchableOpacity
+          className="flex-row items-center justify-center gap-2 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-100 dark:border-blue-900/50 mb-4"
+          onPress={async () => {
+            await Notifications.scheduleNotificationAsync({
+              content: {
+                title: "Test Notification 🔔",
+                body: "If you see this, notifications are working!",
+                sound: true,
+              },
+              trigger: null, // Immediate
+            });
+            Alert.alert("Sent", "Check your status bar!");
+          }}
+        >
+          <Bell size={20} color="#2563eb" />
+          <Text className="text-blue-600 dark:text-blue-400 font-semibold">
+            Test Notification
+          </Text>
+        </TouchableOpacity>
 
         <TouchableOpacity
           className="flex-row items-center justify-center gap-2 p-4 bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-100 dark:border-red-900/50"

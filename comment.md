@@ -1,240 +1,95 @@
-# Codebase Deep Dive & Commentary
+# Codebase Deep Dive & Commentary (Version 2.0)
 
-This document provides a detailed breakdown of the **Offline Todo App**. It explains not just _what_ the code does, but _why_ specific solutions were chosen.
-
-## 1. Core Philosophy: "Offline First & Simple"
-
-**The Goal**: A production-ready app that works without internet, feels native (fast), and is easy to maintain.
-
-**The Solution Stack**:
-
-- **Storage**: `expo-sqlite` (Raw power) + `drizzle-orm` (Safety).
-- **State**: `zustand` (Less boilerplate than Redux, easier than Context).
-- **UI**: `nativewind` (Tailwind CSS for React Native) for rapid styling.
+This document provides a technical explanation of the final architecture, focusing on the **Scheduled Reminders** and **Production Readiness**.
 
 ---
 
-## 2. Folder Structure Explained
+## 1. The Database & Migrations (`/db`)
 
-```text
-/app             -> The Navigation Router (File-based).
-  (tabs)         -> Our Bottom Tab screens (Home, History, Settings).
-  _layout.tsx    -> The Root Container (Providers, Global Config).
-  global.css     -> Tailwind directives.
-/components      -> Reusable UI blocks (Buttons, List Items).
-/db              -> The Database Brain (Schema & Connection).
-/store           -> The App Logic (Actions & State).
-```
+### Why explicit migrations?
+
+When adding the `dueDate` feature, we modified the schema. In a real app, users already have the database on their phones.
+
+- **The Solution**: In `client.ts`, we added an `ALTER TABLE` block wrapped in a `try/catch`. This safely adds the column to old databases without crashing the app for returning users.
 
 ---
 
-## 3. Deep Dive: Key Files & Functions
+## 2. The Logic Center (`/store/useTodoStore.ts`)
 
-### A. The Database Layer (`/db`)
+We transitioned from "Gamified Completion" to "Productivity Reminders".
 
-**Why SQLite?**
-SharedPreferences/AsyncStorage are for _settings_, not _data_. SQLite is a robust SQL engine that lives on the phone. It handles thousands of rows easily.
+### Correct Notification Trigger
 
-#### `db/schema.ts`
+We discovered that `date: Date` triggers can be unreliable in some Expo environments.
 
-We use **Drizzle ORM** to define our table in TypeScript. This prevents "magic string" errors (e.g., typing `is_complete` vs `is_completed`).
-
-```typescript
-export const todos = sqliteTable("todos", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  text: text("text").notNull(),
-  isCompleted: integer("is_completed", { mode: "boolean" }), // SQLite stores bools as 0/1, Drizzle converts them for us.
-  createdAt: integer("created_at", { mode: "timestamp" }), // Stored as numbers (ms), converted to Date objects.
-});
-```
-
-### B. The Logic Center (`/store/useTodoStore.ts`)
-
-**Why Zustand?**
-It allows us to access `state` and `actions` anywhere without wrapping components in `<Providers>`.
-
-#### Code Walkthrough: `useTodoStore.ts`
-
-This file is the **Logic Center** of the application. It handles all data state and business rules.
-
-**Key Responsibilities:**
-1.  **Initialize Database**: Checks for tables on startup.
-2.  **CRUD Operations**: Create, Read, Update, Delete for Todos.
-3.  **State Sync**: Ensures the in-memory `todos` array always matches the SQLite database.
-4.  **Side Effects**: Triggers Notifications and Haptics (indirectly).
+- **The Solution**: We switched to `TIME_INTERVAL` triggers.
+- **Math**: `seconds = (DueDate - Now) / 1000`. This is the industry-standard way to ensure the OS fires the notification accurately.
 
 ```typescript
-import { desc, eq } from "drizzle-orm";
-import { create } from "zustand";
-import { db, initializeDb } from "../db/client";
-import { todos } from "../db/schema";
-import * as Notifications from "expo-notifications"; // Imported dynamically in logic
-
-interface TodoState {
-  todos: (typeof todos.$inferSelect)[];
-  init: () => Promise<void>;
-  loadTodos: () => Promise<void>;
-  addTodo: (text: string) => Promise<void>;
-  toggleTodo: (id: number) => Promise<void>;
-  updateTodo: (id: number, text: string) => Promise<void>;
-  deleteTodo: (id: number) => Promise<void>;
-  deleteCompleted: () => Promise<void>;
-}
-
 export const useTodoStore = create<TodoState>((set, get) => ({
-  todos: [], // Initial empty state
+  // ... imports and boilerplate ...
 
-  // 1. INIT: Called by _layout.tsx when app starts
-  init: async () => {
-    try {
-      initializeDb(); // Run raw SQL to create tables if missing
-      await get().loadTodos(); // Fetch initial data
-    } catch (e) {
-      console.error("Failed to init DB", e);
-    }
-  },
-
-  // 2. READ: Fetches data from SQLite and puts it in Zustand State
-  loadTodos: async () => {
-    try {
-      // Drizzle Query: SELECT * FROM todos ORDER BY created_at DESC
-      const data = await db.select().from(todos).orderBy(desc(todos.createdAt));
-      set({ todos: data }); // Updates UI components automatically
-    } catch (e) {
-      console.error("Failed to load todos", e);
-    }
-  },
-
-  // 3. CREATE
-  addTodo: async (text: string) => {
+  addTodo: async (text: string, dueDate?: Date) => {
     try {
       await db.insert(todos).values({
         text,
         createdAt: new Date(),
         isCompleted: false,
+        dueDate: dueDate ?? null,
       });
-      await get().loadTodos(); // Refresh state to show new item
-    } catch (e) {
-      console.error(e);
-    }
-  },
 
-  // 4. UPDATE (Toggle Completion) + NOTIFICATION LOGIC
-  toggleTodo: async (id: number) => {
-    try {
-      const todo = get().todos.find((t) => t.id === id);
-      if (!todo) return;
-
-      const newStatus = !todo.isCompleted;
-
-      // Optimistic-like update: DB First
-      await db
-        .update(todos)
-        .set({ isCompleted: newStatus })
-        .where(eq(todos.id, id));
-
-      await get().loadTodos(); // Sync State
-
-      // Check if ALL tasks are now complete
-      if (newStatus) {
-        const currentTodos = get().todos;
-        const activeCount = currentTodos.filter((t) => !t.isCompleted).length;
-
-        // If 0 active tasks remain, celebrate!
-        if (activeCount === 0 && currentTodos.length > 0) {
-          import("expo-notifications").then(({ scheduleNotificationAsync }) => {
-            scheduleNotificationAsync({
-              content: {
-                title: "All Tasks Completed! 🎉",
-                body: "Great job! You've finished everything for now.",
-              },
-              trigger: null, // immediate
-            });
+      // Industry Standard: TimeInterval Trigger
+      if (dueDate && dueDate > new Date()) {
+        const seconds = Math.floor((dueDate.getTime() - Date.now()) / 1000);
+        if (seconds > 0) {
+          await Notifications.scheduleNotificationAsync({
+            content: { title: "Task Reminder ⏰", body: text, sound: true },
+            trigger: {
+              type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+              seconds: seconds,
+              repeats: false,
+            },
           });
         }
       }
-    } catch (e) {
-      console.error(e);
-    }
-  },
-
-  // 5. UPDATE (Edit Text)
-  updateTodo: async (id: number, text: string) => {
-    try {
-      await db.update(todos).set({ text }).where(eq(todos.id, id));
       await get().loadTodos();
     } catch (e) {
       console.error(e);
     }
   },
-
-  // 6. DELETE (Single)
-  deleteTodo: async (id: number) => {
-    try {
-      await db.delete(todos).where(eq(todos.id, id));
-      await get().loadTodos();
-    } catch (e) {
-      console.error(e);
-    }
-  },
-
-  // 7. DELETE (Batch - Clear History)
-  deleteCompleted: async () => {
-    try {
-      await db.delete(todos).where(eq(todos.isCompleted, true));
-      await get().loadTodos();
-    } catch (e) {
-      console.error(e);
-    }
-  },
+  // ...
 }));
 ```
 
-#### Key Function Breakdown: `toggleTodo(id)`
+---
 
-### C. UI & Visuals (`/components`)
+## 3. UI Implementation Details
 
-#### `TodoItem.tsx`
+### A. Smart Reminders in `AddTodo.tsx`
 
-**Why Haptics?**
-Mobile apps should _feel_ physical. We added `Haptics.impactAsync()` on press.
-**Interaction Design**:
+Users hate picking dates manually.
 
-- **Tap**: Toggle completion.
-- **Long Press**: Enter "Edit Mode".
-  - _How:_ We swap the `<Text>` component for a `<TextInput>` conditionally based on the `isEditing` state.
-- **Delete**: Separate touch target (Trash icon).
+- **The Solution**: We implemented **Quick Presets** (5m, 15m, 1h).
+- **Logic**: Clicking a chip calculates the offset immediately.
+- **Crash Prevention**: We encountered a conflict where opening the DatePicker while the Keyboard was closing caused a `TypeError`. We resolved this by ensuring state updates are clean before showing native dialogs.
 
-#### `ProgressRing.tsx`
+### B. Android Notification Channels in `_layout.tsx`
 
-**Why SVG + Reanimated?**
+On Android 13+, notifications require two things: Permissions AND a Channel.
 
-- **SVG**: Draws sharp circles at any size.
-- **Reanimated**: Runs animations on the _UI Thread_ (Native side), not the JS Thread. This ensures the progress ring fills up smoothly (60fps) even if the app is busy processing data.
-- **Math**: We use `strokeDashoffset` to control how much of the circle's border is painted.
-  - `circumference * (1 - progress)` -> If progress is 1 (100%), offset is 0 (Full Circle).
+- **The Solution**: We added `setNotificationChannelAsync("default", ...)`. Without this, the system accepts the notification but never displays it to the user.
 
-### D. Navigation (`/app`)
+### C. Manual Verification in `settings.tsx`
 
-#### `_layout.tsx` (Root)
+Debugging notifications is hard because you have to wait for timers.
 
-This is the entry point.
-
-1.  **`useDrizzleStudio`**: Injects the code needed to view the DB in your web browser.
-2.  **`Notifications.setNotificationHandler`**: Tells the OS "Yes, show the alert even if the app is open."
-3.  **`useEffect(init)`**: Starts the Database/Zustand store immediately when the app launches.
-
-#### `(tabs)/_layout.tsx`
-
-Uses `expo-router`'s `<Tabs>`. It automatically creates the bottom tab bar. We customized the `tabBarIcon` to use `Lucide` icons for a consistent look.
+- **The Solution**: Added a "Test Notification" button. This triggers an **immediate** (`trigger: null`) notification to confirm that permissions and channels are configured correctly.
 
 ---
 
-## 4. Building for Production vs Development
+## 4. Production APK Strategy
 
-**Why was the app 200MB?**
+The 218MB size was due to the **Metro Debugger** being embedded in the app.
 
-- **Dev Build**: Contains the "Metro Bundler" (a server inside your phone) to let you hot-reload code.
-- **Production Build**: We ran `eas build --profile preview` to change `buildType` to `apk`.
-  - This tells Expo: "Don't include the server. Bundle the JavaScript file inside the APK."
-  - Result: A standalone file that runs offline and is much smaller (~30MB).
+- **The Solution**: In `eas.json`, we set `buildType: "apk"` for the preview profile.
+- **Result**: A standalone 30MB file that includes the pre-compiled JavaScript bundle, making it completely independent of your development computer.
